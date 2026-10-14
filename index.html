@@ -8,11 +8,13 @@
   :root {
     --bg: #f7f7f5; --card: #ffffff; --text: #1f1f1f; --muted: #6b6b6b;
     --border: #e3e3e0; --accent: #2f6fde; --accent-text: #ffffff; --ghost: #ececea;
+    --step: #eaf1fd;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #191919; --card: #232323; --text: #ececec; --muted: #9a9a9a;
       --border: #383838; --accent: #5b8ff0; --accent-text: #ffffff; --ghost: #313131;
+      --step: #26324a;
     }
   }
   * { box-sizing: border-box; }
@@ -51,6 +53,32 @@
     width: 100%; height: 70vh; margin-top: 20px; border: 1px solid var(--border);
     border-radius: 12px; background: #fff;
   }
+
+  /* 저장 방법 안내 */
+  .modal {
+    position: fixed; inset: 0; background: rgba(0,0,0,.45);
+    display: flex; align-items: flex-end; justify-content: center; padding: 16px; z-index: 10;
+  }
+  .modal[hidden] { display: none; }
+  @media (min-width: 600px) { .modal { align-items: center; } }
+  .sheet {
+    background: var(--card); color: var(--text); border-radius: 16px; padding: 22px 20px;
+    width: 100%; max-width: 440px; display: grid; gap: 14px;
+  }
+  .sheet h2 { margin: 0; font-size: 19px; }
+  .sheet .lead { margin: 0; color: var(--muted); font-size: 14px; }
+  .steps { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; counter-reset: s; }
+  .steps li {
+    counter-increment: s; background: var(--step); border-radius: 10px;
+    padding: 10px 12px 10px 46px; position: relative; font-size: 15px;
+  }
+  .steps li::before {
+    content: counter(s); position: absolute; left: 12px; top: 10px;
+    width: 24px; height: 24px; border-radius: 50%; background: var(--accent); color: var(--accent-text);
+    font-weight: 700; font-size: 13px; display: grid; place-items: center;
+  }
+  .sheet label { font-size: 13px; color: var(--muted); display: flex; gap: 6px; align-items: center; }
+  .sheet .buttons button { flex: 1; }
 </style>
 </head>
 <body>
@@ -84,16 +112,29 @@
     </label>
 
     <div class="buttons">
-      <button id="downloadBtn" disabled>PDF 다운로드</button>
-      <button id="printBtn" class="ghost" disabled>인쇄 창으로 저장</button>
+      <button id="printBtn" disabled>PDF로 저장</button>
+      <button id="downloadBtn" class="ghost" disabled>빠른 다운로드 (이미지 PDF)</button>
     </div>
-    <p class="hint"><b>PDF 다운로드</b>는 바로 파일로 받아져요(휴대폰 추천). 페이지를 이미지로 담기 때문에 PDF 안의 글자는 선택·검색이 안 됩니다.<br>
-    글자 선택이 필요하면 <b>인쇄 창으로 저장</b>을 눌러 대상을 "PDF로 저장"으로 고르세요(PC 추천).</p>
+    <p class="hint"><b>PDF로 저장</b>: 글자 선택·검색이 되는 깔끔한 PDF. 누르면 저장 방법이 안내돼요.<br>
+    <b>빠른 다운로드</b>: 바로 받아지지만 페이지를 이미지로 담아 글자 선택이 안 돼요.</p>
     <div id="status"></div>
   </div>
 
   <iframe id="preview" title="미리보기"></iframe>
 </main>
+
+<div class="modal" id="guide" hidden>
+  <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="guideTitle">
+    <h2 id="guideTitle">PDF 저장 방법</h2>
+    <p class="lead">다음 화면(인쇄 창)에서 이렇게만 하면 돼요.</p>
+    <ol class="steps" id="guideSteps"></ol>
+    <label><input type="checkbox" id="noGuide"> 다음부터 안내 안 보기</label>
+    <div class="buttons">
+      <button class="ghost" id="guideCancel">취소</button>
+      <button id="guideGo">확인, 계속하기</button>
+    </div>
+  </div>
+</div>
 
 <script>
   const BASE_FONT_PX = 16; // 브라우저 기본 글씨 크기
@@ -104,6 +145,31 @@
   const scaleInput = $('scale'), scaleOut = $('scaleOut'), nameInput = $('fileName');
   const downloadBtn = $('downloadBtn'), printBtn = $('printBtn');
   const statusEl = $('status'), preview = $('preview');
+  const guide = $('guide'), guideSteps = $('guideSteps');
+
+  const ua = navigator.userAgent;
+  const isIOS = /iPhone|iPad|iPod/i.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+  const isAndroid = /Android/i.test(ua);
+  const isMobile = isIOS || isAndroid;
+
+  const GUIDE = {
+    ios: [
+      '인쇄 창 <b>위쪽의 공유 버튼</b>(네모에 위쪽 화살표)을 누르세요.',
+      '<b>"파일에 저장"</b>을 누르세요.',
+      '저장할 곳을 고르고 <b>"저장"</b>을 누르면 끝!',
+    ],
+    android: [
+      '인쇄 창 <b>맨 위의 프린터 이름</b>을 누르세요.',
+      '목록에서 <b>"PDF로 저장"</b>을 고르세요.',
+      '동그란 <b>PDF 버튼</b>을 누르면 다운로드 끝!',
+    ],
+    desktop: [
+      '<b>대상</b>(프린터)을 <b>"PDF로 저장"</b>으로 바꾸세요.',
+      '<b>"저장"</b>을 누르면 끝!',
+    ],
+  };
+  guideSteps.innerHTML = GUIDE[isIOS ? 'ios' : isAndroid ? 'android' : 'desktop']
+    .map((s) => `<li>${s}</li>`).join('');
 
   let htmlText = null;
   let assetMap = new Map(); // 상대 경로 -> blob URL
@@ -157,7 +223,8 @@
     return null;
   }
 
-  function buildDoc() {
+  // mode: 'preview' (미리보기 + 이미지 PDF용) | 'print' (새 탭에서 자동 인쇄)
+  function buildDoc(mode = 'preview') {
     const doc = new DOMParser().parseFromString(htmlText, 'text/html');
     const scale = Number(scaleInput.value);
 
@@ -173,10 +240,10 @@
       }
     }
 
+    // 브라우저가 저장 파일명으로 문서 제목을 씀
     doc.title = pdfName();
 
     // A4, 여백 15mm, 배경 유지, html 기준 글씨 크기 조정
-    // .pdf-mode 는 PDF 다운로드 때만 켜서 노션 화면용 여백/최대폭을 없앰
     const style = doc.createElement('style');
     style.textContent = `
       @page { size: A4; margin: 15mm; }
@@ -187,7 +254,17 @@
     doc.head.appendChild(style);
 
     const script = doc.createElement('script');
-    script.src = HTML2PDF_SRC;
+    if (mode === 'print') {
+      // 글꼴(수식 포함)까지 다 불러온 뒤 인쇄 창 열기
+      script.textContent = `
+        window.addEventListener('load', () => {
+          (document.fonts ? document.fonts.ready : Promise.resolve())
+            .then(() => setTimeout(() => window.print(), 400));
+        });
+      `;
+    } else {
+      script.src = HTML2PDF_SRC;
+    }
     doc.head.appendChild(script);
 
     return { html: '<!doctype html>\n' + doc.documentElement.outerHTML, linked };
@@ -199,7 +276,7 @@
 
   function render() {
     setBusy(true);
-    const { html, linked } = buildDoc();
+    const { html, linked } = buildDoc('preview');
     preview.onload = () => {
       setBusy(false);
       statusEl.textContent = '준비 완료' + (linked ? ` (연결된 파일 ${linked}개)` : '');
@@ -207,6 +284,48 @@
     preview.srcdoc = html;
   }
 
+  // ---- PDF로 저장 (인쇄 방식, 글자 PDF) ----
+  function skipGuide() {
+    try { return localStorage.getItem('noPrintGuide') === '1'; } catch { return false; }
+  }
+
+  function startPrint() {
+    const name = pdfName();
+    if (isMobile) {
+      // 휴대폰은 iframe 인쇄가 불안정해서, 문서만 담긴 새 탭을 열어 그 탭에서 인쇄
+      const { html } = buildDoc('print');
+      const url = URL.createObjectURL(new Blob([html], { type: 'text/html' }));
+      const tab = window.open(url, '_blank');
+      if (!tab) location.href = url; // 팝업이 막히면 현재 탭에서 열기
+      statusEl.textContent = '인쇄 창이 열리면 안내대로 저장하세요. 끝나면 이 탭으로 돌아오면 돼요.';
+    } else {
+      const prevTitle = document.title;
+      document.title = name;
+      preview.contentDocument.title = name;
+      preview.contentWindow.focus();
+      preview.contentWindow.print();
+      setTimeout(() => { document.title = prevTitle; }, 1000);
+    }
+  }
+
+  printBtn.addEventListener('click', () => {
+    if (skipGuide()) return startPrint();
+    guide.hidden = false;
+    $('guideGo').focus();
+  });
+
+  $('guideCancel').addEventListener('click', () => { guide.hidden = true; });
+  guide.addEventListener('click', (e) => { if (e.target === guide) guide.hidden = true; });
+
+  $('guideGo').addEventListener('click', () => {
+    if ($('noGuide').checked) {
+      try { localStorage.setItem('noPrintGuide', '1'); } catch {}
+    }
+    guide.hidden = true;
+    startPrint();
+  });
+
+  // ---- 빠른 다운로드 (이미지 PDF) ----
   downloadBtn.addEventListener('click', async () => {
     const win = preview.contentWindow, idoc = preview.contentDocument;
     if (!win.html2pdf) {
@@ -219,36 +338,25 @@
     try {
       await idoc.fonts.ready;
       idoc.documentElement.classList.add('pdf-mode');
-      // 휴대폰은 캔버스 크기 제한이 있어 해상도를 조금 낮춤
-      const mobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
       await win.html2pdf().set({
         margin: 15,
         filename: pdfName() + '.pdf',
         image: { type: 'jpeg', quality: 0.95 },
-        html2canvas: { scale: mobile ? 1.5 : 2, useCORS: true, backgroundColor: '#ffffff' },
+        // 휴대폰은 캔버스 크기 제한이 있어 해상도를 조금 낮춤
+        html2canvas: { scale: isMobile ? 1.5 : 2, useCORS: true, backgroundColor: '#ffffff' },
         jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
-        pagebreak: { mode: ['css', 'legacy'], avoid: ['img', 'tr', 'pre', 'figure', '.katex-display'] },
+        // avoid-all: 페이지 경계에 걸친 요소를 통째로 다음 페이지로 넘겨 잘림 방지
+        pagebreak: { mode: ['avoid-all', 'css', 'legacy'] },
       }).from(idoc.body).save();
       statusEl.textContent = `저장 완료: ${pdfName()}.pdf`;
     } catch (e) {
       console.error(e);
-      statusEl.textContent = 'PDF를 만들지 못했어요. 문서가 너무 길면 "인쇄 창으로 저장"을 써 주세요.';
+      statusEl.textContent = 'PDF를 만들지 못했어요. "PDF로 저장" 버튼을 써 주세요.';
     } finally {
       idoc.documentElement.classList.remove('pdf-mode');
-      downloadBtn.textContent = 'PDF 다운로드';
+      downloadBtn.textContent = '빠른 다운로드 (이미지 PDF)';
       setBusy(false);
     }
-  });
-
-  printBtn.addEventListener('click', () => {
-    const name = pdfName();
-    const prevTitle = document.title;
-    // 브라우저가 저장 파일명으로 페이지 제목을 쓰므로 양쪽 다 맞춰 둠
-    document.title = name;
-    preview.contentDocument.title = name;
-    preview.contentWindow.focus();
-    preview.contentWindow.print();
-    setTimeout(() => { document.title = prevTitle; }, 1000);
   });
 </script>
 </body>
