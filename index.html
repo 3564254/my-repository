@@ -7,12 +7,12 @@
 <style>
   :root {
     --bg: #f7f7f5; --card: #ffffff; --text: #1f1f1f; --muted: #6b6b6b;
-    --border: #e3e3e0; --accent: #2f6fde; --accent-text: #ffffff;
+    --border: #e3e3e0; --accent: #2f6fde; --accent-text: #ffffff; --ghost: #ececea;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #191919; --card: #232323; --text: #ececec; --muted: #9a9a9a;
-      --border: #383838; --accent: #5b8ff0; --accent-text: #ffffff;
+      --border: #383838; --accent: #5b8ff0; --accent-text: #ffffff; --ghost: #313131;
     }
   }
   * { box-sizing: border-box; }
@@ -30,17 +30,22 @@
   .row { display: grid; gap: 6px; }
   .row > span { font-weight: 600; }
   .row small { color: var(--muted); }
-  input[type=file] { font: inherit; color: var(--text); }
+  input[type=file] { font: inherit; color: var(--text); max-width: 100%; }
+  input[type=text] {
+    font: inherit; color: var(--text); background: var(--bg); width: 100%;
+    border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
+  }
   .scale { display: flex; align-items: center; gap: 12px; }
   .scale input { flex: 1; }
   .scale output { min-width: 3.5em; font-variant-numeric: tabular-nums; }
+  .buttons { display: flex; flex-wrap: wrap; gap: 10px; }
   button {
-    font: inherit; font-weight: 600; padding: 10px 18px; border: 0; border-radius: 8px;
-    background: var(--accent); color: var(--accent-text); cursor: pointer; justify-self: start;
+    font: inherit; font-weight: 600; padding: 12px 20px; border: 0; border-radius: 8px;
+    background: var(--accent); color: var(--accent-text); cursor: pointer;
   }
+  button.ghost { background: var(--ghost); color: var(--text); }
   button:disabled { opacity: .45; cursor: not-allowed; }
   .hint { color: var(--muted); font-size: 13px; margin: 0; }
-  .hint b { color: var(--text); }
   #status { font-size: 13px; color: var(--muted); min-height: 1.2em; }
   iframe {
     width: 100%; height: 70vh; margin-top: 20px; border: 1px solid var(--border);
@@ -56,13 +61,13 @@
   <div class="card">
     <label class="row">
       <span>HTML 파일</span>
-      <input type="file" id="htmlFile" accept=".html,.htm">
+      <input type="file" id="htmlFile" accept=".html,.htm,text/html">
     </label>
 
     <label class="row">
       <span>내보내기 폴더 (선택)</span>
       <input type="file" id="assetDir" webkitdirectory multiple>
-      <small>이미지가 있다면 노션 내보내기 압축을 푼 폴더를 선택하세요. 상대 경로 이미지를 연결합니다.</small>
+      <small>이미지가 있다면 노션 내보내기 압축을 푼 폴더를 선택하세요. (휴대폰에서는 지원되지 않을 수 있어요)</small>
     </label>
 
     <div class="row">
@@ -73,8 +78,17 @@
       </div>
     </div>
 
-    <button id="printBtn" disabled>PDF로 저장</button>
-    <p class="hint">인쇄 창이 열리면 대상을 <b>PDF로 저장</b>으로 선택하세요. 용지(A4)·여백(15mm)·배경색은 자동 적용됩니다.</p>
+    <label class="row">
+      <span>PDF 파일명</span>
+      <input type="text" id="fileName" placeholder="HTML 파일을 고르면 자동으로 채워져요">
+    </label>
+
+    <div class="buttons">
+      <button id="downloadBtn" disabled>PDF 다운로드</button>
+      <button id="printBtn" class="ghost" disabled>인쇄 창으로 저장</button>
+    </div>
+    <p class="hint"><b>PDF 다운로드</b>는 바로 파일로 받아져요(휴대폰 추천). 페이지를 이미지로 담기 때문에 PDF 안의 글자는 선택·검색이 안 됩니다.<br>
+    글자 선택이 필요하면 <b>인쇄 창으로 저장</b>을 눌러 대상을 "PDF로 저장"으로 고르세요(PC 추천).</p>
     <div id="status"></div>
   </div>
 
@@ -83,21 +97,35 @@
 
 <script>
   const BASE_FONT_PX = 16; // 브라우저 기본 글씨 크기
+  const HTML2PDF_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js';
 
   const $ = (id) => document.getElementById(id);
   const htmlInput = $('htmlFile'), dirInput = $('assetDir');
-  const scaleInput = $('scale'), scaleOut = $('scaleOut');
-  const printBtn = $('printBtn'), statusEl = $('status'), preview = $('preview');
+  const scaleInput = $('scale'), scaleOut = $('scaleOut'), nameInput = $('fileName');
+  const downloadBtn = $('downloadBtn'), printBtn = $('printBtn');
+  const statusEl = $('status'), preview = $('preview');
 
   let htmlText = null;
-  let baseName = 'output';
   let assetMap = new Map(); // 상대 경로 -> blob URL
+
+  // 노션 파일명 끝에 붙는 32자리 ID 제거: "제목 1a2b...f.html" -> "제목"
+  function cleanName(fileName) {
+    return fileName
+      .replace(/\.html?$/i, '')
+      .replace(/\s+[0-9a-f]{32}$/i, '')
+      .trim() || 'output';
+  }
+
+  function pdfName() {
+    const n = (nameInput.value.trim() || 'output').replace(/[\\/:*?"<>|]/g, '_');
+    return n.replace(/\.pdf$/i, '');
+  }
 
   htmlInput.addEventListener('change', async () => {
     const f = htmlInput.files[0];
     if (!f) return;
     htmlText = await f.text();
-    baseName = f.name.replace(/\.html?$/i, '');
+    nameInput.value = cleanName(f.name.normalize('NFC'));
     render();
   });
 
@@ -133,7 +161,6 @@
     const doc = new DOMParser().parseFromString(htmlText, 'text/html');
     const scale = Number(scaleInput.value);
 
-    // 상대 경로 이미지·링크를 선택한 폴더의 파일로 연결
     let linked = 0;
     if (assetMap.size) {
       for (const el of doc.querySelectorAll('[src], [href]')) {
@@ -146,33 +173,79 @@
       }
     }
 
-    doc.title = baseName;
+    doc.title = pdfName();
 
-    // 원본 스크립트와 같은 설정: A4, 여백 15mm, 배경 유지, html 기준 글씨 크기 조정
+    // A4, 여백 15mm, 배경 유지, html 기준 글씨 크기 조정
+    // .pdf-mode 는 PDF 다운로드 때만 켜서 노션 화면용 여백/최대폭을 없앰
     const style = doc.createElement('style');
     style.textContent = `
       @page { size: A4; margin: 15mm; }
       html { font-size: ${BASE_FONT_PX * scale}px !important; }
       * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+      html.pdf-mode body { max-width: none !important; margin: 0 !important; padding: 0 !important; }
     `;
     doc.head.appendChild(style);
+
+    const script = doc.createElement('script');
+    script.src = HTML2PDF_SRC;
+    doc.head.appendChild(script);
 
     return { html: '<!doctype html>\n' + doc.documentElement.outerHTML, linked };
   }
 
+  function setBusy(busy) {
+    downloadBtn.disabled = printBtn.disabled = busy;
+  }
+
   function render() {
-    printBtn.disabled = true;
+    setBusy(true);
     const { html, linked } = buildDoc();
     preview.onload = () => {
-      printBtn.disabled = false;
-      statusEl.textContent = `준비 완료: ${baseName}.html` + (linked ? ` (연결된 파일 ${linked}개)` : '');
+      setBusy(false);
+      statusEl.textContent = '준비 완료' + (linked ? ` (연결된 파일 ${linked}개)` : '');
     };
     preview.srcdoc = html;
   }
 
+  downloadBtn.addEventListener('click', async () => {
+    const win = preview.contentWindow, idoc = preview.contentDocument;
+    if (!win.html2pdf) {
+      statusEl.textContent = 'PDF 라이브러리를 불러오지 못했어요. 인터넷 연결을 확인해 주세요.';
+      return;
+    }
+    setBusy(true);
+    downloadBtn.textContent = '만드는 중…';
+    statusEl.textContent = '긴 문서는 몇 초 걸릴 수 있어요.';
+    try {
+      await idoc.fonts.ready;
+      idoc.documentElement.classList.add('pdf-mode');
+      // 휴대폰은 캔버스 크기 제한이 있어 해상도를 조금 낮춤
+      const mobile = /Android|iPhone|iPad|iPod/i.test(navigator.userAgent);
+      await win.html2pdf().set({
+        margin: 15,
+        filename: pdfName() + '.pdf',
+        image: { type: 'jpeg', quality: 0.95 },
+        html2canvas: { scale: mobile ? 1.5 : 2, useCORS: true, backgroundColor: '#ffffff' },
+        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+        pagebreak: { mode: ['css', 'legacy'], avoid: ['img', 'tr', 'pre', 'figure', '.katex-display'] },
+      }).from(idoc.body).save();
+      statusEl.textContent = `저장 완료: ${pdfName()}.pdf`;
+    } catch (e) {
+      console.error(e);
+      statusEl.textContent = 'PDF를 만들지 못했어요. 문서가 너무 길면 "인쇄 창으로 저장"을 써 주세요.';
+    } finally {
+      idoc.documentElement.classList.remove('pdf-mode');
+      downloadBtn.textContent = 'PDF 다운로드';
+      setBusy(false);
+    }
+  });
+
   printBtn.addEventListener('click', () => {
+    const name = pdfName();
     const prevTitle = document.title;
-    document.title = baseName; // 저장 시 기본 파일명으로 쓰이도록
+    // 브라우저가 저장 파일명으로 페이지 제목을 쓰므로 양쪽 다 맞춰 둠
+    document.title = name;
+    preview.contentDocument.title = name;
     preview.contentWindow.focus();
     preview.contentWindow.print();
     setTimeout(() => { document.title = prevTitle; }, 1000);
