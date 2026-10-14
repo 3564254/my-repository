@@ -37,6 +37,12 @@
     font: inherit; color: var(--text); background: var(--bg); width: 100%;
     border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px;
   }
+  .drop {
+    display: grid; gap: 4px; place-items: center; text-align: center; cursor: pointer;
+    padding: 28px 16px; border: 2px dashed var(--border); border-radius: 12px; background: var(--bg);
+  }
+  .drop small { color: var(--muted); }
+  .drop.over, .drop:hover { border-color: var(--accent); }
   .scale { display: flex; align-items: center; gap: 12px; }
   .scale input { flex: 1; }
   .scale output { min-width: 3.5em; font-variant-numeric: tabular-nums; }
@@ -108,16 +114,16 @@
   <p class="sub">노션에서 내보낸 HTML의 글씨 크기를 줄여 A4 PDF로 저장합니다. 파일은 이 브라우저 안에서만 처리되며 어디에도 업로드되지 않습니다.</p>
 
   <div class="card">
-    <label class="row">
-      <span>HTML 파일</span>
-      <input type="file" id="htmlFile" accept=".html,.htm,text/html">
+    <label class="drop" id="drop">
+      <input type="file" id="htmlFile" accept=".zip,.html,.htm,application/zip,text/html" hidden>
+      <b>노션 ZIP 파일을 여기에 끌어다 놓거나 눌러서 선택</b>
+      <small id="dropName">ZIP·HTML 모두 돼요. ZIP은 압축 안 풀어도 되고, 맨 위 페이지를 PDF로 만들어요.</small>
     </label>
 
-    <label class="row">
-      <span>내보내기 폴더 (선택)</span>
-      <input type="file" id="assetDir" webkitdirectory multiple>
-      <small>이미지가 있다면 노션 내보내기 압축을 푼 폴더를 선택하세요. (휴대폰에서는 지원되지 않을 수 있어요)</small>
-    </label>
+    <button id="pasteBtn" class="ghost">📋 복사한 내용 붙여넣기</button>
+    <div id="pasteBox" contenteditable="true" hidden
+         style="min-height:64px;padding:10px 12px;border:2px dashed var(--accent);border-radius:8px;background:var(--bg)">여기를 길게 눌러 "붙여넣기"를 누르세요</div>
+    <p class="hint" style="margin-top:-8px">노션 페이지에서 전체 선택(Ctrl+A) → 복사 후 이 버튼을 누르거나, 이 페이지에서 Ctrl+V 하세요.</p>
 
     <div class="row">
       <span>글씨 크기 배율</span>
@@ -129,7 +135,7 @@
 
     <label class="row">
       <span>PDF 파일명</span>
-      <input type="text" id="fileName" placeholder="HTML 파일을 고르면 자동으로 채워져요">
+      <input type="text" id="fileName" placeholder="파일을 올리면 자동으로 채워져요">
     </label>
 
     <div class="buttons">
@@ -212,7 +218,7 @@
   const HTML2PDF_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js';
 
   const $ = (id) => document.getElementById(id);
-  const htmlInput = $('htmlFile'), dirInput = $('assetDir');
+  const htmlInput = $('htmlFile');
   const scaleInput = $('scale'), scaleOut = $('scaleOut'), nameInput = $('fileName');
   const downloadBtn = $('downloadBtn'), printBtn = $('printBtn');
   const statusEl = $('status'), preview = $('preview');
@@ -258,24 +264,164 @@
     return n.replace(/\.pdf$/i, '');
   }
 
-  htmlInput.addEventListener('change', async () => {
-    const f = htmlInput.files[0];
-    if (!f) return;
-    htmlText = await f.text();
-    nameInput.value = cleanName(f.name.normalize('NFC'));
-    render();
-  });
+  const JSZIP_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js';
+  const MIME = {
+    png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', webp: 'image/webp',
+    svg: 'image/svg+xml', bmp: 'image/bmp', css: 'text/css', js: 'text/javascript', pdf: 'application/pdf',
+  };
+  let htmlDir = '';          // ZIP 안 HTML의 폴더 경로 (상대 경로 해석용)
 
-  dirInput.addEventListener('change', () => {
+  function loadScript(src) {
+    return new Promise((res, rej) => {
+      if (document.querySelector(`script[src="${src}"]`)) return res();
+      const s = document.createElement('script');
+      s.src = src; s.onload = res; s.onerror = () => rej(new Error('script load failed'));
+      document.head.appendChild(s);
+    });
+  }
+
+  function clearAssets() {
     for (const url of assetMap.values()) URL.revokeObjectURL(url);
     assetMap = new Map();
-    for (const f of dirInput.files) {
-      const path = (f.webkitRelativePath || f.name).normalize('NFC');
-      if (/\.html?$/i.test(path)) continue;
-      assetMap.set(path, URL.createObjectURL(f));
+    htmlDir = '';
+  }
+
+  // ZIP 안의 파일 목록 (노션은 ZIP 안에 ZIP을 넣어 주기도 해서 한 번 더 풀어 줌)
+  async function collectZip(data, prefix = '', depth = 0) {
+    const zip = await window.JSZip.loadAsync(data);
+    const out = [];
+    for (const entry of Object.values(zip.files)) {
+      if (entry.dir) continue;
+      const path = (prefix + entry.name).normalize('NFC');
+      if (/\.zip$/i.test(path) && depth < 2) {
+        out.push(...await collectZip(await entry.async('blob'), '', depth + 1));
+      } else {
+        out.push({ path, entry });
+      }
     }
-    statusEl.textContent = `폴더에서 파일 ${assetMap.size}개를 불러왔습니다.`;
-    if (htmlText) render();
+    return out;
+  }
+
+  async function openZip(file) {
+    statusEl.textContent = 'ZIP 푸는 중…';
+    await loadScript(JSZIP_SRC);
+    const files = await collectZip(file);
+    clearAssets();
+    const pages = [];
+    for (const { path, entry } of files) {
+      if (/\.html?$/i.test(path)) { pages.push({ path, entry }); continue; }
+      const ext = path.split('.').pop().toLowerCase();
+      const blob = new Blob([await entry.async('arraybuffer')], { type: MIME[ext] || '' });
+      assetMap.set(path, URL.createObjectURL(blob));
+    }
+    if (!pages.length) { statusEl.textContent = 'ZIP 안에 HTML 파일이 없어요.'; return; }
+    // 맨 위(가장 바깥 폴더)에 있는 페이지 하나만 사용
+    pages.sort((a, b) => a.path.split('/').length - b.path.split('/').length || a.path.localeCompare(b.path));
+    const { path, entry } = pages[0];
+    htmlText = await entry.async('string');
+    htmlDir = path.includes('/') ? path.slice(0, path.lastIndexOf('/') + 1) : '';
+    nameInput.value = cleanName(path.split('/').pop());
+    render();
+  }
+
+  async function openFile(f) {
+    if (!f) return;
+    $('dropName').textContent = f.name;
+    try {
+      if (/\.zip$/i.test(f.name) || f.type.includes('zip')) {
+        await openZip(f);
+      } else {
+        clearAssets();
+        htmlText = await f.text();
+        nameInput.value = cleanName(f.name.normalize('NFC'));
+        render();
+      }
+    } catch (e) {
+      console.error(e);
+      statusEl.textContent = '파일을 열지 못했어요. 인터넷 연결이나 파일을 확인해 주세요.';
+    }
+  }
+
+  htmlInput.addEventListener('change', () => openFile(htmlInput.files[0]));
+
+  // ---- 붙여넣기 ----
+  const PASTE_CSS = `
+    body { font-family: -apple-system, BlinkMacSystemFont, "Apple SD Gothic Neo", "Malgun Gothic", sans-serif;
+           font-size: 1rem; line-height: 1.6; color: #37352f; word-break: keep-all; overflow-wrap: break-word; }
+    h1 { font-size: 1.875rem; } h2 { font-size: 1.5rem; } h3 { font-size: 1.25rem; }
+    img { max-width: 100%; height: auto; }
+    table { border-collapse: collapse; } td, th { border: 1px solid #ddd; padding: .25em .5em; }
+    th { background: #f7f6f3; }
+    pre, code { background: #f7f6f3; border-radius: 4px; font-size: .9em; }
+    pre { padding: .8em 1em; white-space: pre-wrap; }
+    blockquote { border-left: 3px solid #37352f; margin-left: 0; padding-left: 1em; }
+  `;
+  const escapeHtml = (s) => s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+
+  function loadPasted(html, text) {
+    // HTML 코드 자체를 붙여 넣은 경우도 처리
+    if (!html && /^\s*<(!doctype|html|head|body|div|p|h[1-6]|article|section)\b/i.test(text || '')) html = text;
+    if (!html && !(text || '').trim()) { statusEl.textContent = '클립보드가 비어 있어요.'; return; }
+
+    if (html && /<html[\s>]/i.test(html) && /<link|<style/i.test(html)) {
+      htmlText = html; // 완전한 HTML 문서는 그대로
+    } else {
+      const body = html
+        ? new DOMParser().parseFromString(html, 'text/html').body.innerHTML
+        : `<div style="white-space: pre-wrap">${escapeHtml(text)}</div>`;
+      htmlText = `<!doctype html><html><head><meta charset="utf-8"><style>${PASTE_CSS}</style></head><body>${body}</body></html>`;
+    }
+    clearAssets();
+    htmlInput.value = '';
+    const t = new DOMParser().parseFromString(htmlText, 'text/html').querySelector('h1, h2, h3, title');
+    nameInput.value = (t && t.textContent.trim().slice(0, 60)) || '붙여넣은 문서';
+    $('dropName').textContent = '붙여넣은 내용';
+    $('pasteBox').hidden = true;
+    render();
+  }
+
+  // Ctrl+V / 길게 눌러 붙여넣기 (파일명 칸 입력 중일 때는 제외)
+  window.addEventListener('paste', (e) => {
+    if (e.target === nameInput) return;
+    e.preventDefault();
+    const cd = e.clipboardData;
+    if (cd.files && cd.files.length) return openFile(cd.files[0]); // 복사한 ZIP/HTML 파일
+    loadPasted(cd.getData('text/html'), cd.getData('text/plain'));
+  });
+
+  // 버튼으로 붙여넣기 (휴대폰에서 편함, 브라우저가 권한을 물어볼 수 있음)
+  $('pasteBtn').addEventListener('click', async () => {
+    try {
+      if (navigator.clipboard && navigator.clipboard.read) {
+        const items = await navigator.clipboard.read();
+        let html = '', text = '';
+        for (const it of items) {
+          if (it.types.includes('text/html')) html = await (await it.getType('text/html')).text();
+          if (it.types.includes('text/plain')) text = await (await it.getType('text/plain')).text();
+        }
+        return loadPasted(html, text);
+      }
+      loadPasted('', await navigator.clipboard.readText());
+    } catch (err) {
+      console.error(err);
+      // 권한이 막힌 브라우저: 붙여넣을 칸을 보여 줌
+      const box = $('pasteBox');
+      box.hidden = false; box.focus();
+      statusEl.textContent = '아래 점선 칸에 붙여 넣어 주세요.';
+    }
+  });
+
+  // 끌어다 놓기
+  const drop = $('drop');
+  ['dragenter', 'dragover'].forEach((t) => drop.addEventListener(t, (e) => {
+    e.preventDefault(); drop.classList.add('over');
+  }));
+  ['dragleave', 'drop'].forEach((t) => drop.addEventListener(t, () => drop.classList.remove('over')));
+  // 페이지 어디에 떨어뜨려도 처리 (브라우저가 파일을 직접 열어 버리지 않게)
+  window.addEventListener('dragover', (e) => e.preventDefault());
+  window.addEventListener('drop', (e) => {
+    e.preventDefault(); drop.classList.remove('over');
+    if (e.dataTransfer && e.dataTransfer.files.length) openFile(e.dataTransfer.files[0]);
   });
 
   scaleInput.addEventListener('input', () => {
@@ -287,6 +433,7 @@
     let p = ref.split(/[?#]/)[0];
     try { p = decodeURIComponent(p); } catch {}
     p = p.replace(/^\.\//, '').normalize('NFC');
+    if (htmlDir && assetMap.has(htmlDir + p)) return assetMap.get(htmlDir + p);
     if (assetMap.has(p)) return assetMap.get(p);
     for (const [key, url] of assetMap) {
       if (key.endsWith('/' + p)) return url;
