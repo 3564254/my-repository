@@ -43,6 +43,12 @@
   }
   .drop small { color: var(--muted); }
   .drop.over, .drop:hover { border-color: var(--accent); }
+  .pastezone {
+    padding: 14px 16px; border: 2px dashed var(--border); border-radius: 12px; background: var(--bg);
+    color: var(--muted); text-align: center; font-size: 14px; caret-color: transparent; outline: none;
+    -webkit-user-select: text; user-select: text; cursor: text;
+  }
+  .pastezone:focus { border-color: var(--accent); color: var(--text); }
   .scale { display: flex; align-items: center; gap: 12px; }
   .scale input { flex: 1; }
   .scale output { min-width: 3.5em; font-variant-numeric: tabular-nums; }
@@ -119,6 +125,9 @@
       <b>ZIP·HTML 파일을 끌어다 놓거나, 눌러서 선택하거나, 복사해서 Ctrl+V</b>
       <small id="dropName">ZIP은 압축 안 풀어도 돼요. 맨 위 페이지를 PDF로 만들어요.</small>
     </label>
+
+    <div class="pastezone" id="pasteZone" contenteditable="true" inputmode="none"
+         role="textbox" aria-label="파일 붙여넣기 칸">📋 복사한 파일을 여기에 <b>꾹 눌러 붙여넣기</b> (PC는 Ctrl+V)</div>
 
 
     <div class="row">
@@ -340,16 +349,36 @@
 
   htmlInput.addEventListener('change', () => openFile(htmlInput.files[0]));
 
-  // ---- 붙여넣기: 탐색기/파인더에서 복사한 파일을 Ctrl+V ----
+  // ---- 붙여넣기: 복사한 파일을 Ctrl+V 또는 (휴대폰) 붙여넣기 칸을 꾹 눌러 붙여넣기 ----
+  const pasteZone = $('pasteZone');
+  const PASTE_LABEL = pasteZone.innerHTML;
+
+  function fileFromClipboard(cd) {
+    if (!cd) return null;
+    if (cd.files && cd.files.length) return cd.files[0];
+    for (const it of cd.items || []) {
+      if (it.kind === 'file') { const f = it.getAsFile(); if (f) return f; }
+    }
+    return null;
+  }
+
   window.addEventListener('paste', (e) => {
     if (e.target === nameInput) return; // 파일명 칸에 글 붙여넣기는 그대로
-    const files = e.clipboardData && e.clipboardData.files;
-    if (files && files.length) {
-      e.preventDefault();
-      openFile(files[0]);
+    e.preventDefault();
+    const f = fileFromClipboard(e.clipboardData);
+    if (f) {
+      openFile(f);
     } else {
-      statusEl.textContent = '붙여 넣은 게 파일이 아니에요. 파일 탐색기에서 ZIP이나 HTML 파일을 복사해 주세요.';
+      statusEl.textContent = '붙여 넣은 게 파일이 아니에요. 파일 앱(탐색기)에서 ZIP이나 HTML 파일을 복사해 주세요.';
     }
+    pasteZone.blur();
+  });
+
+  // 칸에 글자가 들어가는 일이 없게 항상 원래 문구로 되돌림
+  pasteZone.addEventListener('input', () => { pasteZone.innerHTML = PASTE_LABEL; });
+  pasteZone.addEventListener('blur', () => { pasteZone.innerHTML = PASTE_LABEL; });
+  pasteZone.addEventListener('keydown', (e) => {
+    if (!(e.ctrlKey || e.metaKey)) e.preventDefault(); // 타이핑 막기 (Ctrl/Cmd+V는 허용)
   });
 
   scaleInput.addEventListener('input', () => {
