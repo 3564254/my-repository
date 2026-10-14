@@ -54,6 +54,19 @@
     border-radius: 12px; background: #fff;
   }
 
+  /* 앱 안 브라우저 안내 */
+  .inapp {
+    background: #fff4d6; color: #5a4400; border: 1px solid #f0d58a; border-radius: 12px;
+    padding: 14px 16px; margin: 0 0 20px; display: grid; gap: 10px; font-size: 14px;
+  }
+  .inapp[hidden] { display: none; }
+  .inapp b { color: #3d2e00; }
+  .inapp .buttons button { padding: 10px 16px; }
+  @media (prefers-color-scheme: dark) {
+    .inapp { background: #3a3015; color: #f1dfa8; border-color: #5e4d1f; }
+    .inapp b { color: #fff0c2; }
+  }
+
   /* 저장 방법 안내 */
   .modal {
     position: fixed; inset: 0; background: rgba(0,0,0,.45);
@@ -83,6 +96,14 @@
 </head>
 <body>
 <main>
+  <div class="inapp" id="inapp" hidden>
+    <div id="inappMsg"></div>
+    <div class="buttons">
+      <button id="openExternal" hidden>외부 브라우저로 열기</button>
+      <button id="copyLink" class="ghost">링크 복사</button>
+    </div>
+  </div>
+
   <h1>HTML → PDF 변환기</h1>
   <p class="sub">노션에서 내보낸 HTML의 글씨 크기를 줄여 A4 PDF로 저장합니다. 파일은 이 브라우저 안에서만 처리되며 어디에도 업로드되지 않습니다.</p>
 
@@ -137,6 +158,56 @@
 </div>
 
 <script>
+  // ---- 앱 안 브라우저(카카오톡 등) 처리: 다운로드·인쇄가 막혀 있어 외부 브라우저로 보냄 ----
+  (() => {
+    const ua = navigator.userAgent;
+    const here = location.href;
+    const isKakao = /KAKAOTALK/i.test(ua);
+    const isLine = /\bLine\//i.test(ua);
+    const otherInApp = /NAVER\(inapp|Instagram|FBAN|FBAV|FB_IAB|DaumApps|everytimeApp|BAND\/|; wv\)/i.test(ua);
+    if (!isKakao && !isLine && !otherInApp) return;
+
+    const isIOS = /iPhone|iPad|iPod/i.test(ua);
+    let open = null;
+
+    if (isKakao) {
+      // 카카오톡 공식 스킴: 기본 브라우저로 현재 주소 열기
+      open = () => { location.href = 'kakaotalk://web/openExternal?url=' + encodeURIComponent(here); };
+    } else if (isLine) {
+      open = () => {
+        const u = new URL(here); u.searchParams.set('openExternalBrowser', '1'); location.href = u.toString();
+      };
+    } else if (!isIOS) {
+      // 안드로이드: 크롬으로 열기
+      open = () => {
+        location.href = 'intent://' + here.replace(/^https?:\/\//, '') +
+          '#Intent;scheme=https;package=com.android.chrome;end';
+      };
+    }
+
+    const box = document.getElementById('inapp');
+    const msg = document.getElementById('inappMsg');
+    const btn = document.getElementById('openExternal');
+    box.hidden = false;
+    if (open) {
+      msg.innerHTML = '이 앱 안에서는 PDF 저장이 막혀 있어요. <b>외부 브라우저로 열기</b>를 눌러 주세요.';
+      btn.hidden = false;
+      btn.addEventListener('click', open);
+      if (isKakao || isLine) open(); // 바로 외부 브라우저로 넘기기
+    } else {
+      msg.innerHTML = '이 앱 안에서는 PDF 저장이 막혀 있어요. 화면 <b>오른쪽 위(또는 아래) 메뉴 → "Safari로 열기"</b>를 눌러 주세요. 메뉴가 없으면 링크를 복사해 Safari에 붙여 넣으세요.';
+    }
+
+    document.getElementById('copyLink').addEventListener('click', async (e) => {
+      try { await navigator.clipboard.writeText(here); }
+      catch {
+        const t = document.createElement('textarea'); t.value = here; document.body.appendChild(t);
+        t.select(); document.execCommand('copy'); t.remove();
+      }
+      e.target.textContent = '복사됨! 브라우저 주소창에 붙여 넣으세요';
+    });
+  })();
+
   const BASE_FONT_PX = 16; // 브라우저 기본 글씨 크기
   const HTML2PDF_SRC = 'https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js';
 
